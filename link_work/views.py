@@ -5,13 +5,15 @@ from rest_framework.response import Response
 from rest_framework import status
 from .models import CustomUser, MagicLink
 from .serializers import LoginSerializer, RegisterSerializer
-
+from rest_framework.permissions import IsAuthenticated
+from django.core.cache import cache
+from .utils import generate_jwt_token
+from rest_framework_simplejwt.tokens import RefreshToken
 
 class RegisterView(APIView):
     def post(self, request):
         serializer = RegisterSerializer(data=request.data)
         if serializer.is_valid():
-            # Attempt to create the user
             try:
                 user = serializer.save()
             except Exception as e:
@@ -20,18 +22,15 @@ class RegisterView(APIView):
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
 
-            # Validate the user instance
             if not isinstance(user, CustomUser):
                 return Response(
                     {"error": "User creation failed. Invalid user instance."},
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
 
-            # Create the MagicLink
             magic_link = MagicLink.objects.create(user=user)
             link = f"http://yourdomain.com/auth/magic-link/{magic_link.token}/"
 
-            # Send the magic link via email
             send_mail(
                 subject="Your Magic Login Link",
                 message=f"Click the link to log in: {link}",
@@ -57,11 +56,9 @@ class LoginView(APIView):
         except CustomUser.DoesNotExist:
             raise Http404("User not found")
 
-        # Create a MagicLink for the user
         magic_link = MagicLink.objects.create(user=user)
         link = f"http://yourdomain.com/auth/magic-link/{magic_link.token}/"
 
-        # Send the magic link to the user's email
         send_mail(
             subject="Your Magic Login Link",
             message=f"Click the link to log in: {link}",
@@ -74,7 +71,6 @@ class LoginView(APIView):
             status=status.HTTP_200_OK
         )
 
-
 class MagicLinkAuthView(APIView):
     def get(self, request, token):
         try:
@@ -85,11 +81,48 @@ class MagicLinkAuthView(APIView):
         if not magic_link.is_valid():
             return Response({"error": "Magic link has expired."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Authenticate the user (customize this behavior based on your application)
         user = magic_link.user
-        magic_link.delete()  # Delete the magic link after successful use
+        magic_link.delete()
+
+        refresh = RefreshToken.for_user(user)
+        access_token = str(refresh.access_token)
 
         return Response(
-            {"message": f"Welcome, {user.email}! You are successfully logged in."},
+            {"message": f"Welcome, {user.email}!", "jwt_token": access_token},
             status=status.HTTP_200_OK
         )
+
+
+
+
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.exceptions import AuthenticationFailed
+
+class UserDetailsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        print("Authorization Header:", request.headers.get('Authorization'))
+        user = request.user
+        return Response({
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+        }, status=status.HTTP_200_OK)
+
+
+
+class LogoutView(APIView):
+    def post(self, request):
+        auth_header = request.headers.get('Authorization')
+        if not auth_header:
+            return Response({"error": "Authorization token not provided"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            token = auth_header.split(" ")[1]
+        except IndexError:
+            return Response({"error": "Invalid Authorization header format"}, status=status.HTTP_400_BAD_REQUEST)
+
+        cache.set(token, 'blacklisted', timeout=3600)
+
+        return Response({"message": "Logout successful"}, status=status.HTTP_200_OK)
