@@ -1,6 +1,6 @@
 # .env file to exclude sensitive information
 .env
-
+venv
 # Python bytecode
 __pycache__
 *.pyc
